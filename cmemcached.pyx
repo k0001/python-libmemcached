@@ -186,8 +186,47 @@ from string import join
 from time import strftime
 from UserDict import DictMixin
 
-class Error(Exception):
-    pass
+class C:
+    SUCCESS = MEMCACHED_SUCCESS
+    FAILURE = MEMCACHED_FAILURE
+    HOST_LOOKUP_FAILURE = MEMCACHED_HOST_LOOKUP_FAILURE
+    CONNECTION_FAILURE = MEMCACHED_CONNECTION_FAILURE
+    CONNECTION_BIND_FAILURE = MEMCACHED_CONNECTION_BIND_FAILURE
+    WRITE_FAILURE = MEMCACHED_WRITE_FAILURE
+    READ_FAILURE = MEMCACHED_READ_FAILURE
+    UNKNOWN_READ_FAILURE = MEMCACHED_UNKNOWN_READ_FAILURE
+    PROTOCOL_ERROR = MEMCACHED_PROTOCOL_ERROR
+    CLIENT_ERROR = MEMCACHED_CLIENT_ERROR
+    SERVER_ERROR = MEMCACHED_SERVER_ERROR
+    CONNECTION_SOCKET_CREATE_FAILURE = MEMCACHED_CONNECTION_SOCKET_CREATE_FAILURE
+    DATA_EXISTS = MEMCACHED_DATA_EXISTS
+    DATA_DOES_NOT_EXIST = MEMCACHED_DATA_DOES_NOT_EXIST
+    NOTSTORED = MEMCACHED_NOTSTORED
+    STORED = MEMCACHED_STORED
+    NOTFOUND = MEMCACHED_NOTFOUND
+    MEMORY_ALLOCATION_FAILURE = MEMCACHED_MEMORY_ALLOCATION_FAILURE
+    PARTIAL_READ = MEMCACHED_PARTIAL_READ
+    SOME_ERRORS = MEMCACHED_SOME_ERRORS
+    NO_SERVERS = MEMCACHED_NO_SERVERS
+    END = MEMCACHED_END
+    DELETED = MEMCACHED_DELETED
+    VALUE = MEMCACHED_VALUE
+    STAT = MEMCACHED_STAT
+    ERRNO = MEMCACHED_ERRNO
+    FAIL_UNIX_SOCKET = MEMCACHED_FAIL_UNIX_SOCKET
+    NOT_SUPPORTED = MEMCACHED_NOT_SUPPORTED
+    NO_KEY_PROVIDED = MEMCACHED_NO_KEY_PROVIDED
+    FETCH_NOTFINISHED = MEMCACHED_FETCH_NOTFINISHED
+    TIMEOUT = MEMCACHED_TIMEOUT
+    BUFFERED = MEMCACHED_BUFFERED
+    BAD_KEY_PROVIDED = MEMCACHED_BAD_KEY_PROVIDED
+    MAXIMUM_RETURN = MEMCACHED_MAXIMUM_RETURN
+
+class MemcachedError(Exception):
+    def __init__(self, errno, *args, **kwargs):
+        super(MemcachedError, self).__init__(*args, **kwargs)
+        self.errno = errno
+
 
 cdef int _FLAG_PICKLE, _FLAG_INTEGER, _FLAG_LONG
 _FLAG_PICKLE = 1<<0
@@ -372,7 +411,7 @@ cdef class Client:
 
         # memcached do not support the key whose length is bigger than MEMCACHED_MAX_KEY
         if key_len >= MEMCACHED_MAX_KEY:
-            return False
+            raise KeyError("Key too long: '%s'" % key)
 
         val = _prepare_value(val, &flags)
         PyString_AsStringAndSize(val, &c_val, &bytes)
@@ -397,6 +436,9 @@ cdef class Client:
         else:
             assert False
 
+        if retval != MEMCACHED_SUCCESS:
+            raise MemcachedError(retval)
+
         return (retval == 0)
 
     def append(self, key, val, time_t time=0):
@@ -409,7 +451,7 @@ cdef class Client:
 
         # memcached do not support the key whose length is bigger than MEMCACHED_MAX_KEY
         if key_len >= MEMCACHED_MAX_KEY:
-            return False
+            raise KeyError("Key too long: '%s'" % key)
 
         val = _prepare_value(val, &flags)
         PyString_AsStringAndSize(val, &c_val, &bytes)
@@ -429,12 +471,14 @@ cdef class Client:
 
         # memcached do not support the key whose length is bigger than MEMCACHED_MAX_KEY
         if key_len >= MEMCACHED_MAX_KEY:
-            return 0
+            raise KeyError("Key too long: '%s'" % key)
 
         val = _prepare_value(val, &flags)
         PyString_AsStringAndSize(val, &c_val, &bytes)
 
         retval = memcached_prepend(self.mc, c_key, key_len, c_val, bytes, time, flags)
+        if retval != MEMCACHED_SUCCESS:
+            raise MemcachedError(retval)
 
         return (retval == 0)
 
@@ -447,10 +491,13 @@ cdef class Client:
         PyString_AsStringAndSize(key, &c_key, &key_len)
         # memcached do not support the key whose length is bigger than MEMCACHED_MAX_KEY
         if key_len >= MEMCACHED_MAX_KEY:
-            return 0
+            raise KeyError("Key too long: '%s'" % key)
 
         # memcached_delete return MEMCACHED_SUCCESS(0) on success
         retval = memcached_delete(self.mc, c_key, key_len, time)
+        if retval != MEMCACHED_SUCCESS:
+            raise MemcachedError(retval)
+
         # return true if delete successed, otherwise false
         return (retval == 0)
 
@@ -471,6 +518,9 @@ cdef class Client:
         flags = 0
         c_val = memcached_get(self.mc, c_key, key_len, &bytes, &flags, &rc)
 
+        if rc != MEMCACHED_SUCCESS:
+            raise MemcachedError(rc)
+
         if c_val:
             val = _restore(<char *>c_val, bytes, flags)
             free(c_val)
@@ -490,10 +540,13 @@ cdef class Client:
         PyString_AsStringAndSize(key, &c_key, &key_len)
 
         if key_len > MEMCACHED_MAX_KEY:
-            return None
+            raise KeyError("Key too long: '%s'" % key)
 
         flags = 0
         c_val = memcached_get(self.mc, c_key, key_len, &bytes, &flags, &rc)
+
+        if rc != MEMCACHED_SUCCESS:
+            raise MemcachedError(rc)
 
         if c_val:
             val = _restore(<char *>c_val, bytes, 0)
@@ -530,12 +583,17 @@ cdef class Client:
         valid_nkeys = index
 
         rc = memcached_mget(self.mc, ckeys, <size_t *>ckey_lens, valid_nkeys)
+        if rc != MEMCACHED_SUCCESS:
+            raise MemcachedError(rc)
 
         result = {}
 
         mc_result_ptr = memcached_result_create(self.mc, &mc_result)
         while True:
             mc_result_ptr = memcached_fetch_result(self.mc, mc_result_ptr, &rc)
+            if rc != MEMCACHED_SUCCESS:
+                raise MemcachedError(rc)
+
             if mc_result_ptr == NULL:
                 break
             val = _restore(memcached_result_value(mc_result_ptr),
@@ -583,7 +641,7 @@ cdef class Client:
             return 0
         rc = memcached_increment(self.mc, c_key, key_len, val, &new_value)
         if rc != MEMCACHED_SUCCESS:
-            return None
+            raise MemcachedError(rc)
         return new_value
 
     def decr(self, key, int val=1):
@@ -597,7 +655,7 @@ cdef class Client:
             return 0
         rc = memcached_decrement(self.mc, c_key, key_len, val, &new_value)
         if rc != MEMCACHED_SUCCESS:
-            return None
+            raise MemcachedError(rc)
         return new_value
 
     def disconnect_all(self):
