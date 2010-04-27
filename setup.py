@@ -9,6 +9,7 @@ setup(
 		maintainer="subdragon",
 		maintainer_email="subdragon@gmail.com",
 
+        setup_requires = ['pyrex'],
         requires = ['pyrex'],
 		# This assumes that libmemcache is installed with base /usr/local
         ext_modules=[Extension('cmemcached', ['cmemcached.pyx'],
